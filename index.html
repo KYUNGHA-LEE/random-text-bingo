@@ -638,7 +638,7 @@ const db = getDatabase(app);
 const storage = getStorage(app);
 
 const urlParams = new URLSearchParams(location.search);
-const isAdmin = urlParams.has('admin');
+const isAdmin = urlParams.has('admin') || /\/admin\/?$/.test(location.pathname);
 let roomParam = urlParams.get('room');
 if (isAdmin && !roomParam) {
   // 선생님이 방 없이 ?admin 으로 들어오면 고유한 방을 자동 생성 (강사끼리 안 겹치도록)
@@ -777,7 +777,7 @@ $('logoutStudentBtn').onclick = async () => {
 // ============ 선생님 UI 초기화 ============
 function initTeacherUI() {
   // 공유 링크
-  const shareUrl = `${location.origin}${location.pathname}${roomId !== 'default' ? '?room=' + encodeURIComponent(roomId) : ''}`;
+  const shareUrl = `${location.origin}/${roomId !== 'default' ? '?room=' + encodeURIComponent(roomId) : ''}`;
   $('shareLink').value = shareUrl;
   $('copyLinkBtn').onclick = () => {
     $('shareLink').select();
