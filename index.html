@@ -136,6 +136,11 @@
     background: #f8fafc;
   }
   .upload-zone:hover { border-color: #6cbf86; background: #eef2ff; }
+  .upload-zone.dragover {
+    border-color: #46a05f;
+    background: #e6f7ec;
+    transform: scale(1.01);
+  }
   .upload-zone .ico { font-size: 32px; margin-bottom: 6px; }
   .upload-zone .txt { font-size: 13px; color: #64748b; }
   .upload-zone strong { color: #1e293b; }
@@ -522,7 +527,7 @@
           <p class="small" style="margin-bottom:10px;">파일명이 그대로 정답 단어가 됩니다 (예: 적외선센서.png)</p>
           <label class="upload-zone" for="imgUpload">
             <div class="ico">🖼️</div>
-            <div class="txt"><strong>그림 파일 선택</strong> (여러 장 가능)</div>
+            <div class="txt"><strong>그림 파일 선택</strong> (여러 장 가능)<br>여기로 끌어다 놓아도 됩니다</div>
             <div class="small" id="imgUploadStatus" style="margin-top:4px;"></div>
           </label>
           <input type="file" id="imgUpload" multiple accept="image/*" style="display:none;">
@@ -534,7 +539,7 @@
           <p class="small" style="margin-bottom:10px;">A열: 정답(이미지 파일명) / B열: 문제(설명 텍스트) · 헤더 자동 인식</p>
           <label class="upload-zone" for="excelUpload">
             <div class="ico">📑</div>
-            <div class="txt"><strong>.xlsx, .xls, .csv 파일 선택</strong></div>
+            <div class="txt"><strong>.xlsx, .xls, .csv 파일 선택</strong><br>여기로 끌어다 놓아도 됩니다</div>
             <div class="small" id="excelUploadStatus" style="margin-top:4px;"></div>
           </label>
           <input type="file" id="excelUpload" accept=".xlsx,.xls,.csv" style="display:none;">
@@ -630,14 +635,12 @@ import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebas
 import {
   getDatabase, ref, set, get, update, onValue, onDisconnect, push, remove, off, child, serverTimestamp
 } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js';
-import {
-  getStorage, ref as sRef, uploadBytes, getDownloadURL, deleteObject, listAll
-} from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-storage.js';
 
 // ============ 초기화 ============
+// 그림은 Firebase Storage(유료 요금제 필요) 대신
+// 브라우저에서 작게 줄여 Realtime Database에 직접 저장한다.
 const app = initializeApp(firebaseConfig);
 const db = getDatabase(app);
-const storage = getStorage(app);
 
 const urlParams = new URLSearchParams(location.search);
 // 주소에 방(?room=)이 있으면 학생, 없으면 선생님
@@ -670,6 +673,71 @@ function toast(msg, type='') {
   setTimeout(() => t.className = 'toast', 2400);
 }
 function uid() { return Math.random().toString(36).slice(2, 10); }
+// 예전 방식(url)로 올린 그림과 새 방식(data)을 모두 지원
+const imgSrc = (o) => (o && (o.data || o.url)) || '';
+
+// ============ 그림 축소 (Storage 없이 DB에 저장) ============
+const MAX_DIM = 480;              // 긴 변 기준 최대 픽셀
+const TARGET_BYTES = 120 * 1024;  // 한 장당 목표 용량
+
+const readAsDataURL = (file) => new Promise((res, rej) => {
+  const fr = new FileReader();
+  fr.onload = () => res(fr.result);
+  fr.onerror = rej;
+  fr.readAsDataURL(file);
+});
+const loadImage = (src) => new Promise((res, rej) => {
+  const im = new Image();
+  im.onload = () => res(im);
+  im.onerror = rej;
+  im.src = src;
+});
+
+async function compressImage(file) {
+  const img = await loadImage(await readAsDataURL(file));
+  const scale = Math.min(1, MAX_DIM / Math.max(img.width, img.height));
+  const w = Math.max(1, Math.round(img.width * scale));
+  const h = Math.max(1, Math.round(img.height * scale));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff';     // 투명 PNG가 검게 보이지 않도록
+  ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(img, 0, 0, w, h);
+
+  let q = 0.75;
+  let out = canvas.toDataURL('image/jpeg', q);
+  while (out.length > TARGET_BYTES && q > 0.35) {
+    q -= 0.1;
+    out = canvas.toDataURL('image/jpeg', q);
+  }
+  return out;
+}
+
+// 드롭 영역 연결 — accept로 받을 파일을 걸러 handler로 넘긴다
+function setupDropZone(zoneEl, accept, handler) {
+  const hasFiles = (e) => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files');
+  ['dragenter', 'dragover'].forEach(ev => zoneEl.addEventListener(ev, e => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+    zoneEl.classList.add('dragover');
+  }));
+  ['dragleave', 'dragend'].forEach(ev => zoneEl.addEventListener(ev, () => zoneEl.classList.remove('dragover')));
+  zoneEl.addEventListener('drop', e => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    zoneEl.classList.remove('dragover');
+    const files = Array.from(e.dataTransfer.files).filter(accept);
+    if (!files.length) { toast('여기에는 다른 종류의 파일을 놓아 주세요', 'error'); return; }
+    handler(files);
+  });
+}
+// 엉뚱한 곳에 놓았을 때 브라우저가 파일을 열어버리는 것 방지
+window.addEventListener('dragover', e => e.preventDefault());
+window.addEventListener('drop', e => e.preventDefault());
 
 // ============ 효과음 (Web Audio API — 외부 파일 없이 동작) ============
 let audioCtx = null;
@@ -825,10 +893,20 @@ function initTeacherUI() {
     btn.onclick = () => setGoal(btn.dataset.goal);
   });
 
-  // 이미지 업로드
+  // 이미지 업로드 (파일 선택 + 드래그앤드롭)
   $('imgUpload').addEventListener('change', handleImageUpload);
-  // 엑셀 업로드
+  setupDropZone(
+    document.querySelector('label[for="imgUpload"]'),
+    f => f.type.startsWith('image/'),
+    uploadImageFiles
+  );
+  // 엑셀 업로드 (파일 선택 + 드래그앤드롭)
   $('excelUpload').addEventListener('change', handleExcelUpload);
+  setupDropZone(
+    document.querySelector('label[for="excelUpload"]'),
+    f => /\.(xlsx|xls|csv)$/i.test(f.name),
+    files => parseExcelFile(files[0])
+  );
 
   $('startGameBtn').onclick = startGame;
   $('resetGameBtn').onclick = resetGame;
@@ -839,36 +917,40 @@ function initTeacherUI() {
 }
 
 // ============ 이미지 업로드 ============
-async function handleImageUpload(e) {
-  const files = Array.from(e.target.files);
+async function uploadImageFiles(files) {
   if (!files.length) return;
-  $('imgUploadStatus').textContent = `업로드 중... 0/${files.length}`;
+  $('imgUploadStatus').textContent = `등록 중... 0/${files.length}`;
   let done = 0;
   for (const f of files) {
     try {
       const nameNoExt = f.name.replace(/\.[^.]+$/, '');
-      const path = `quiz_rooms/${roomId}/images/${Date.now()}_${f.name}`;
-      const r = sRef(storage, path);
-      await uploadBytes(r, f);
-      const url = await getDownloadURL(r);
+      const data = await compressImage(f);
       const imgId = push(ref(db, `${roomPath}/images`)).key;
-      await set(ref(db, `${roomPath}/images/${imgId}`), { name: nameNoExt, url, path });
+      await set(ref(db, `${roomPath}/images/${imgId}`), { name: nameNoExt, data });
     } catch (err) {
       console.error(err);
-      toast(`업로드 실패: ${f.name}`, 'error');
+      toast(`등록 실패: ${f.name}`, 'error');
     }
     done++;
-    $('imgUploadStatus').textContent = `업로드 중... ${done}/${files.length}`;
+    $('imgUploadStatus').textContent = `등록 중... ${done}/${files.length}`;
   }
-  $('imgUploadStatus').textContent = `${done}장 업로드 완료`;
-  e.target.value = '';
+  $('imgUploadStatus').textContent = `${done}장 등록 완료`;
   // 업로드 후 자동 매칭
   setTimeout(rematchAnswers, 500);
 }
 
+async function handleImageUpload(e) {
+  await uploadImageFiles(Array.from(e.target.files));
+  e.target.value = '';
+}
+
 // ============ 엑셀 업로드 ============
 function handleExcelUpload(e) {
-  const f = e.target.files[0];
+  parseExcelFile(e.target.files[0]);
+  e.target.value = '';
+}
+
+function parseExcelFile(f) {
   if (!f) return;
   const reader = new FileReader();
   reader.onload = async (ev) => {
@@ -912,7 +994,6 @@ function handleExcelUpload(e) {
     }
   };
   reader.readAsArrayBuffer(f);
-  e.target.value = '';
 }
 
 // ============ 정답-그림 매칭 ============
@@ -974,6 +1055,7 @@ function renderImageGrid() {
   const ids = Object.keys(teacherImages);
   if (!ids.length) {
     grid.innerHTML = '<p class="small" style="grid-column:1/-1; text-align:center; padding:14px;">업로드된 그림이 없어요</p>';
+    $('imgUploadStatus').textContent = '';   // 초기화 후 남는 안내문 정리
     return;
   }
   ids.forEach(id => {
@@ -981,13 +1063,12 @@ function renderImageGrid() {
     const el = document.createElement('div');
     el.className = 'img-card';
     el.innerHTML = `
-      <img src="${img.url}" alt="${img.name}">
+      <img src="${imgSrc(img)}" alt="${img.name}">
       <div class="name">${img.name}</div>
       <button class="del" data-id="${id}">×</button>
     `;
     el.querySelector('.del').onclick = async () => {
       if (!confirm(`'${img.name}' 그림을 삭제할까요?`)) return;
-      try { await deleteObject(sRef(storage, img.path)); } catch(e) {}
       await remove(ref(db, `${roomPath}/images/${id}`));
     };
     grid.appendChild(el);
@@ -1099,27 +1180,16 @@ function generateRandomBoard(imgIds) {
     [pool[i], pool[j]] = [pool[j], pool[i]];
   }
   const picked = pool.slice(0, need);
+  // 그림 자체는 images에 한 번만 저장하고, 보드에는 id·이름만 담는다
   return picked.map(id => ({
     imageId: id,
     name: teacherImages[id].name,
-    url: teacherImages[id].url,
     marked: false
   }));
 }
 
 async function resetGame() {
   if (!confirm('정말 전체 초기화할까요? (참여자, 문제, 그림, 보드 모두 삭제)')) return;
-
-  // ✅ Storage 이미지 삭제: 캐시 대신 DB에서 최신 목록을 가져와서 누락 방지
-  const imgsSnap = await get(ref(db, `${roomPath}/images`));
-  const imgs = imgsSnap.val() || {};
-  const delPromises = [];
-  for (const id in imgs) {
-    if (imgs[id] && imgs[id].path) {
-      delPromises.push(deleteObject(sRef(storage, imgs[id].path)).catch(() => {}));
-    }
-  }
-  await Promise.all(delPromises);
 
   await update(roomRef, {
     participants: null, questions: null, images: null,
@@ -1164,6 +1234,7 @@ function attachStudentListeners() {
   });
   onValue(ref(db, `${roomPath}/images`), s => {
     studentImages = s.val() || {};
+    renderBoard();   // 그림 데이터가 도착하면 빙고판을 다시 그린다
   });
   onValue(ref(db, `${roomPath}/questions`), s => {
     studentQuestions = s.val() || {};
@@ -1227,7 +1298,7 @@ function renderBoard() {
     const el = document.createElement('div');
     el.className = 'bingo-cell' + (cell.marked ? ' marked' : '');
     el.innerHTML = `
-      <img src="${cell.url}" alt="${cell.name}">
+      <img src="${imgSrc(studentImages[cell.imageId]) || cell.url || ''}" alt="${cell.name}">
       <div class="word">${escapeHtml(cell.name || '')}</div>
     `;
     el.onclick = () => onCellClick(idx, el);
